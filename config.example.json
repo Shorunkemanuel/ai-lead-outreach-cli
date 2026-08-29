@@ -1,0 +1,19 @@
+{
+  "ai": {
+    "provider": "ollama",
+    "base_url": "http://localhost:11434",
+    "model": "qwen2.5:1.5b",
+    "timeout_seconds": 60
+  },
+  "database": {
+    "path": "outreach.db"
+  },
+  "outreach": {
+    "daily_limit": 10,
+    "default_message_style": "professional",
+    "dry_run": true
+  },
+  "messaging": {
+    "provider": "disabled"
+  }
+}
