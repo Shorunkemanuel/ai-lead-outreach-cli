@@ -251,7 +251,8 @@ def show_stats(connection: sqlite3.Connection, daily_limit: int = DEFAULT_DAILY_
     status_rows = connection.execute("SELECT status, COUNT(*) AS count FROM leads GROUP BY status ORDER BY status").fetchall()
     outreach_counts = connection.execute("SELECT status, COUNT(*) AS count FROM outreach GROUP BY status").fetchall()
     today = datetime.now(timezone.utc).date().isoformat()
-    today_sent = connection.execute("SELECT COALESCE(messages_sent, 0) FROM daily_usage WHERE usage_date=?", (today,)).fetchone()[0]
+    usage_row = connection.execute("SELECT messages_sent FROM daily_usage WHERE usage_date=?", (today,)).fetchone()
+    today_sent = usage_row[0] if usage_row else 0
     print(f"\n{APP_NAME}\n{'=' * len(APP_NAME)}")
     print(f"Total leads:       {lead_count}")
     for row in status_rows:
