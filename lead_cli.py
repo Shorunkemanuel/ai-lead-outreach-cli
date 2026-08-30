@@ -35,7 +35,7 @@ def initialize_db(c):
     c.executescript("""CREATE TABLE IF NOT EXISTS leads(id INTEGER PRIMARY KEY AUTOINCREMENT,company TEXT NOT NULL,contact_name TEXT DEFAULT '',job_title TEXT DEFAULT '',phone TEXT DEFAULT '',email TEXT DEFAULT '',website TEXT DEFAULT '',industry TEXT DEFAULT '',country TEXT DEFAULT '',employees TEXT DEFAULT '',painpoint TEXT DEFAULT '',source TEXT DEFAULT '',status TEXT NOT NULL DEFAULT 'NEW',qualification_score INTEGER,qualification_priority TEXT,qualification_reasons TEXT DEFAULT '[]',qualification_gaps TEXT DEFAULT '[]',qualified_at TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL); CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_identity ON leads(company,phone,email); CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status); CREATE INDEX IF NOT EXISTS idx_leads_company ON leads(company); CREATE TABLE IF NOT EXISTS outreach(id INTEGER PRIMARY KEY AUTOINCREMENT,lead_id INTEGER NOT NULL,message TEXT NOT NULL,original_message TEXT DEFAULT '',channel TEXT NOT NULL DEFAULT 'whatsapp',status TEXT NOT NULL DEFAULT 'DRAFT',generated_at TEXT NOT NULL,approved_at TEXT,sent_at TEXT,error TEXT,FOREIGN KEY(lead_id) REFERENCES leads(id) ON DELETE CASCADE); CREATE TABLE IF NOT EXISTS daily_usage(usage_date TEXT PRIMARY KEY,messages_sent INTEGER NOT NULL DEFAULT 0);""")
     cols={r[1] for r in c.execute("PRAGMA table_info(leads)")}; migrations={"qualification_score":"INTEGER","qualification_priority":"TEXT","qualification_reasons":"TEXT DEFAULT '[]'","qualification_gaps":"TEXT DEFAULT '[]'","qualified_at":"TEXT"}
     for col,definition in migrations.items():
-        if col not in cols: c.execute(f"ALTER TABLE leads ADD COLUMN {col} {definition}")
+        if col not in cols:c.execute(f"ALTER TABLE leads ADD COLUMN {col} {definition}")
     c.execute("CREATE INDEX IF NOT EXISTS idx_leads_priority ON leads(qualification_priority)"); c.execute("CREATE INDEX IF NOT EXISTS idx_leads_score ON leads(qualification_score DESC)"); c.commit()
 def normalize_text(v): return " ".join((v or "").strip().split())
 def normalize_phone(v): return re.sub(r"[\s().-]","",normalize_text(v))
@@ -64,8 +64,9 @@ def qualify_lead(l,weights=None):
     if _strong_painpoint(l.painpoint):s+=w["painpoint"];reasons.append("clear actionable painpoint")
     elif l.painpoint:s+=w["painpoint"]//2;reasons.append("painpoint supplied")
     else:gaps.append("painpoint missing")
-    if l.phone and l.email:s+=w["contactability"];reasons.append("phone and email available")
-    elif l.phone or l.email:s+=w["contactability"]//2;reasons.append("one direct contact method available")
+    if l.phone and l.email:s+=w["contactability"];reasons.extend(["phone available","email available"])
+    elif l.phone:s+=w["contactability"]//2;reasons.append("phone available")
+    elif l.email:s+=w["contactability"]//2;reasons.append("email available")
     else:gaps.append("no direct contact method")
     n=_employee_count(l.employees)
     if n is not None and 2<=n<=500:s+=w["company_fit"];reasons.append("target-sized company")
@@ -88,24 +89,24 @@ def import_csv(path,c):
         if "Company" not in cols: raise ValueError("Missing required CSV columns: Company")
         for row in reader:
             row={(k or "").strip():(v or "") for k,v in row.items()}; errors=validate_row(row)
-            if errors: invalid+=1; print(f"⚠ Invalid: {row.get('Company') or '<unknown>'} — {', '.join(errors)}"); continue
-            l=row_to_lead(row); now=utc_now(); cur=c.execute("INSERT OR IGNORE INTO leads(company,contact_name,job_title,phone,email,website,industry,country,employees,painpoint,source,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,'NEW',?,?)",(l.company,l.contact_name,l.job_title,l.phone,l.email,l.website,l.industry,l.country,l.employees,l.painpoint,l.source,now,now)); imported+=cur.rowcount==1; duplicates+=cur.rowcount!=1
-    c.commit(); return imported,duplicates,invalid
+            if errors:invalid+=1;print(f"⚠ Invalid: {row.get('Company') or '<unknown>'} — {', '.join(errors)}");continue
+            l=row_to_lead(row);now=utc_now();cur=c.execute("INSERT OR IGNORE INTO leads(company,contact_name,job_title,phone,email,website,industry,country,employees,painpoint,source,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,'NEW',?,?)",(l.company,l.contact_name,l.job_title,l.phone,l.email,l.website,l.industry,l.country,l.employees,l.painpoint,l.source,now,now));imported+=cur.rowcount==1;duplicates+=cur.rowcount!=1
+    c.commit();return imported,duplicates,invalid
 def qualify_all(c,config):
-    w=config.get("qualification",{}).get("weights",{}); rows=c.execute("SELECT * FROM leads ORDER BY id").fetchall()
+    w=config.get("qualification",{}).get("weights",{});rows=c.execute("SELECT * FROM leads ORDER BY id").fetchall()
     for r in rows:
-        l=Lead(r["company"],r["contact_name"],r["job_title"],r["phone"],r["email"],r["website"],r["industry"],r["country"],r["employees"],r["painpoint"],r["source"]); q=qualify_lead(l,w); now=utc_now(); status="QUALIFIED" if q.priority in {"HIGH","MEDIUM"} else r["status"]
+        l=Lead(r["company"],r["contact_name"],r["job_title"],r["phone"],r["email"],r["website"],r["industry"],r["country"],r["employees"],r["painpoint"],r["source"]);q=qualify_lead(l,w);now=utc_now();status="QUALIFIED" if q.priority in {"HIGH","MEDIUM"} else r["status"]
         c.execute("UPDATE leads SET qualification_score=?,qualification_priority=?,qualification_reasons=?,qualification_gaps=?,qualified_at=?,status=?,updated_at=? WHERE id=?",(q.score,q.priority,json.dumps(q.reasons),json.dumps(q.gaps),now,status,now,r["id"]))
-    c.commit(); return len(rows)
+    c.commit();return len(rows)
 def show_qualified(c,priority=None):
-    q="SELECT id,company,contact_name,qualification_score,qualification_priority,status,qualification_reasons,qualification_gaps FROM leads"; params=()
+    q="SELECT id,company,contact_name,qualification_score,qualification_priority,status,qualification_reasons,qualification_gaps FROM leads";params=()
     if priority:q+=" WHERE qualification_priority=?";params=(priority.upper(),)
     rows=c.execute(q+" ORDER BY COALESCE(qualification_score,-1) DESC,id",params).fetchall()
     if not rows:print("No qualified leads found. Run: python3 lead_cli.py qualify");return
     print(f"\n{'RANK':<6} {'COMPANY':<28} {'SCORE':<7} {'PRIORITY':<10} STATUS\n"+"-"*75)
     for rank,r in enumerate(rows,1):print(f"{rank:<6} {r['company'][:27]:<28} {str(r['qualification_score'] or 0):<7} {r['qualification_priority'] or 'UNRATED':<10} {r['status']}")
     for r in rows:
-        print(f"#{r['id']} {r['company']} — {r['qualification_score']}/100 ({r['qualification_priority']})"); reasons=json.loads(r["qualification_reasons"] or "[]");gaps=json.loads(r["qualification_gaps"] or "[]")
+        print(f"#{r['id']} {r['company']} — {r['qualification_score']}/100 ({r['qualification_priority']})");reasons=json.loads(r["qualification_reasons"] or "[]");gaps=json.loads(r["qualification_gaps"] or "[]")
         if reasons:print("  Why: "+"; ".join(reasons))
         if gaps:print("  Gaps: "+"; ".join(gaps))
 def show_leads(c,status=None):
@@ -115,7 +116,7 @@ def show_leads(c,status=None):
     print(f"\n{'ID':<5} {'Company':<28} {'Contact':<20} {'Phone':<17} Status\n"+"-"*90)
     for r in rows:print(f"{r['id']:<5} {r['company'][:27]:<28} {r['contact_name'][:19]:<20} {r['phone'][:16]:<17} {r['status']}")
 def show_stats(c,limit=10):
-    total=c.execute("SELECT COUNT(*) FROM leads").fetchone()[0]; statuses=c.execute("SELECT status,COUNT(*) count FROM leads GROUP BY status ORDER BY status").fetchall(); today=datetime.now(timezone.utc).date().isoformat();u=c.execute("SELECT messages_sent FROM daily_usage WHERE usage_date=?",(today,)).fetchone();sent=u[0] if u else 0
+    total=c.execute("SELECT COUNT(*) FROM leads").fetchone()[0];statuses=c.execute("SELECT status,COUNT(*) count FROM leads GROUP BY status ORDER BY status").fetchall();today=datetime.now(timezone.utc).date().isoformat();u=c.execute("SELECT messages_sent FROM daily_usage WHERE usage_date=?",(today,)).fetchone();sent=u[0] if u else 0
     print(f"\n{APP_NAME}\n{'='*len(APP_NAME)}\nTotal leads:       {total}");[print(f"{r['status']+':':<20}{r['count']}") for r in statuses];print(f"\nOutreach\n\nSent today:        {sent}/{limit}")
 def main():
     p=argparse.ArgumentParser(description=APP_NAME);p.add_argument("command",nargs="?",choices=["import","leads","stats","qualify","analyze","review","send","run"]);p.add_argument("path",nargs="?");p.add_argument("--status",choices=sorted(ALLOWED_STATUSES));p.add_argument("--priority",choices=["high","medium","low","skip"]);p.add_argument("--dry-run",action="store_true");p.add_argument("--config",default=DEFAULT_CONFIG);a=p.parse_args();cfg=load_config(a.config);c=connect_db(cfg.get("database",{}).get("path",DEFAULT_DB))
