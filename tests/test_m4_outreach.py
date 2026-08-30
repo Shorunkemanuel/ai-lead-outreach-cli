@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
+import lead_cli
 import m4_outreach
 
 
@@ -12,11 +13,10 @@ class Milestone4OutreachTests(unittest.TestCase):
         self.tmp = tempfile.NamedTemporaryFile(delete=False)
         self.tmp.close()
         self.connection = sqlite3.connect(self.tmp.name)
-        # Use the module's initializer when available.
-        if hasattr(m4_outreach, "initialize_db"):
-            m4_outreach.initialize_db(self.connection)
-        elif hasattr(m4_outreach, "init_db"):
-            m4_outreach.init_db(self.connection)
+        self.connection.row_factory = sqlite3.Row
+        # M4 depends on the M1-M3 lead/draft schema plus its own tables.
+        lead_cli.initialize_db(self.connection)
+        m4_outreach.initialize_m4(self.connection)
 
     def tearDown(self):
         self.connection.close()
