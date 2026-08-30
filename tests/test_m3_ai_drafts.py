@@ -94,9 +94,12 @@ class Milestone3AIDraftTests(unittest.TestCase):
         fake = "A concise outreach message can address the lead's specific business problem. Would you be open to a quick look?"
         with patch.object(lead_cli, "call_ollama", return_value=fake):
             draft_id = lead_cli.generate_draft(self.connection, 1, {"ai_model": "qwen2.5:0.5b-instruct-q4_K_M"})
-        with patch.object(lead_cli, "send_whatsapp_message") as sender:
-            lead_cli.review_draft(self.connection, draft_id, "APPROVED")
-        sender.assert_not_called()
+        before = self.connection.execute("SELECT status, message FROM outreach_drafts WHERE id=?", (draft_id,)).fetchone()
+        lead_cli.review_draft(self.connection, draft_id, "APPROVED")
+        after = self.connection.execute("SELECT status, message FROM outreach_drafts WHERE id=?", (draft_id,)).fetchone()
+        self.assertEqual(after["status"], "APPROVED")
+        self.assertEqual(after["message"], before["message"])
+        self.assertEqual(self.connection.execute("SELECT COUNT(*) FROM outreach").fetchone()[0], 0)
 
 
 if __name__ == "__main__":
