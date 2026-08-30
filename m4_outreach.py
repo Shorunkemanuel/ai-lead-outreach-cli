@@ -45,6 +45,10 @@ def utc_now() -> str:
 
 def initialize_m4(c: sqlite3.Connection) -> None:
     c.executescript("""
+        CREATE TABLE IF NOT EXISTS daily_usage (
+            usage_date TEXT PRIMARY KEY,
+            messages_sent INTEGER NOT NULL DEFAULT 0
+        );
         CREATE TABLE IF NOT EXISTS outreach_queue (
             id INTEGER PRIMARY KEY AUTOINCREMENT, lead_id INTEGER NOT NULL,
             draft_id INTEGER NOT NULL, destination TEXT NOT NULL,
@@ -72,7 +76,7 @@ def initialize_m4(c: sqlite3.Connection) -> None:
     c.commit()
 
 
-def _event(c, lead_id: int, event: str, detail: str = "", draft_id: int | None = None, queue_id: int | None = None) -> None:
+def _event(c: sqlite3.Connection, lead_id: int, event: str, detail: str = "", draft_id: int | None = None, queue_id: int | None = None) -> None:
     c.execute(
         "INSERT INTO outreach_events(lead_id,draft_id,queue_id,event,detail,created_at) VALUES(?,?,?,?,?,?)",
         (lead_id, draft_id, queue_id, event, detail, utc_now()),
@@ -191,6 +195,7 @@ def send_queued(c: sqlite3.Connection, provider: MessageProvider, daily_limit: i
 
 def execute_queue(c: sqlite3.Connection, provider: MessageProvider | None = None, daily_limit: int = DEFAULT_DAILY_LIMIT, dry_run: bool = False) -> dict[str, int]:
     """Public M4 execution entry point. Real sending requires an injected provider."""
+    initialize_m4(c)
     if dry_run:
         class _NoSendProvider:
             def send(self, destination: str, message: str) -> str:
