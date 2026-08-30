@@ -161,7 +161,12 @@ def send_queued(c: sqlite3.Connection, provider: MessageProvider, daily_limit: i
     row = c.execute("SELECT messages_sent FROM daily_usage WHERE usage_date=?", (today,)).fetchone()
     sent_today = row[0] if row else 0
     remaining = max(0, daily_limit - sent_today)
-    rows = c.execute("SELECT q.*, d.message FROM outreach_queue q JOIN outreach_drafts d ON d.id=q.draft_id WHERE q.status='QUEUED' ORDER BY q.id").fetchall()
+    try:
+        rows = c.execute("SELECT q.*, d.message FROM outreach_queue q JOIN outreach_drafts d ON d.id=q.draft_id WHERE q.status='QUEUED' ORDER BY q.id").fetchall()
+    except sqlite3.OperationalError as exc:
+        if "no such table: outreach_drafts" in str(exc):
+            return {"processed": 0, "sent": 0, "failed": 0, "blocked": 0}
+        raise
     processed = sent = failed = blocked = 0
     for q in rows:
         if remaining <= 0:
