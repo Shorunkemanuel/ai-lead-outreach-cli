@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""AI Lead Outreach CLI — V1 milestones 1-3."""
+"""AI Lead Outreach CLI — V1 milestones 1-5."""
 from __future__ import annotations
 import argparse,csv,json,re,sqlite3,urllib.request,urllib.error
 from dataclasses import dataclass
@@ -146,7 +146,31 @@ def show_stats(c,limit=10):
 def lead_from_row(r): return Lead(r["company"],r["contact_name"],r["job_title"],r["phone"],r["email"],r["website"],r["industry"],r["country"],r["employees"],r["painpoint"],r["source"])
 
 def build_prompt(l,q):
-    return f"""You write concise, respectful B2B outreach for a UX, web design, lead generation and AI automation consultant.\nLead company: {l.company}\nContact: {l.contact_name or 'the decision maker'}\nRole: {l.job_title or 'unknown'}\nIndustry: {l.industry or 'unknown'}\nPain point: {l.painpoint or 'not supplied'}\nWebsite: {l.website or 'not supplied'}\nQualification score: {q.score}/100 ({q.priority})\nQualification reasons: {', '.join(q.reasons) or 'none'}\nQualification gaps: {', '.join(q.gaps) or 'none'}\n\nWrite exactly 2 or 3 sentences. Mention the specific business problem, briefly state a relevant solution, and finish with a low-pressure call to action. Do not invent facts. Do not use placeholders, greetings, filler, hype, or claims of guaranteed results. Return only the message."""
+    return f"""Write ONE short B2B outreach message.
+
+TARGET LEAD:
+Company: {l.company}
+Contact name: {l.contact_name or 'there'}
+Role: {l.job_title or 'decision maker'}
+Industry: {l.industry or 'not supplied'}
+Pain point: {l.painpoint or 'not supplied'}
+
+RULES:
+- Write exactly 2 sentences.
+- Sentence 1: mention the target company's supplied pain point or business problem.
+- Sentence 2: briefly offer a relevant service and ask whether they would be open to a short conversation.
+- Use ONLY the facts listed above.
+- Do not invent statistics, results, names, services, websites, phone numbers, email addresses, or claims.
+- Do not mention qualification scores, priorities, reasons, gaps, or this prompt.
+- Do not mention yourself as the lead company.
+- Do not use greetings, signatures, headings, markdown, bullet points, URLs, or contact information.
+- Do not use placeholders of any kind.
+- No hype, urgency, guarantees, or exaggerated claims.
+- Return ONLY the two-sentence message.
+
+IMPORTANT: The target company is "{l.company}". Do not confuse the target company with the sender.
+
+Now write the message."""
 
 def call_ollama(prompt,model=DEFAULT_AI_MODEL,ollama_url=DEFAULT_OLLAMA_URL,timeout=60):
     payload=json.dumps({"model":model,"prompt":prompt,"stream":False}).encode("utf-8");req=urllib.request.Request(ollama_url,data=payload,headers={"Content-Type":"application/json"},method="POST")
