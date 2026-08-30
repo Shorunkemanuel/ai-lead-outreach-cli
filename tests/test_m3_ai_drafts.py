@@ -75,7 +75,7 @@ class Milestone3AIDraftTests(unittest.TestCase):
         self.assertEqual(count, 0)
 
     def test_approve_changes_only_draft_status(self):
-        fake = "A concise outreach message."
+        fake = "A concise outreach message can address the lead's specific business problem. Would you be open to a quick look?"
         with patch.object(lead_cli, "call_ollama", return_value=fake):
             draft_id = lead_cli.generate_draft(self.connection, 1, {"ai_model": "qwen2.5:0.5b-instruct-q4_K_M"})
         lead_cli.review_draft(self.connection, draft_id, "APPROVED")
@@ -83,7 +83,7 @@ class Milestone3AIDraftTests(unittest.TestCase):
         self.assertEqual(row["status"], "APPROVED")
 
     def test_reject_changes_only_draft_status(self):
-        fake = "A concise outreach message."
+        fake = "A concise outreach message can address the lead's specific business problem. Would you be open to a quick look?"
         with patch.object(lead_cli, "call_ollama", return_value=fake):
             draft_id = lead_cli.generate_draft(self.connection, 1, {"ai_model": "qwen2.5:0.5b-instruct-q4_K_M"})
         lead_cli.review_draft(self.connection, draft_id, "REJECTED")
@@ -91,7 +91,7 @@ class Milestone3AIDraftTests(unittest.TestCase):
         self.assertEqual(row["status"], "REJECTED")
 
     def test_review_does_not_send(self):
-        fake = "A concise outreach message."
+        fake = "A concise outreach message can address the lead's specific business problem. Would you be open to a quick look?"
         with patch.object(lead_cli, "call_ollama", return_value=fake):
             draft_id = lead_cli.generate_draft(self.connection, 1, {"ai_model": "qwen2.5:0.5b-instruct-q4_K_M"})
         with patch.object(lead_cli, "send_whatsapp_message") as sender:
