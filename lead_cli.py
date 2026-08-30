@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""AI Lead Outreach CLI — V1 Milestone 1.
+"""AI Lead Outreach CLI — V1.
 
-Single-script, local-first lead ingestion and SQLite foundation.
+Local-first lead ingestion and qualification foundation. External messaging is
+not implemented in this milestone.
 """
 
 from __future__ import annotations
@@ -21,7 +22,10 @@ DEFAULT_DB = "outreach.db"
 DEFAULT_CONFIG = "config.json"
 DEFAULT_DAILY_LIMIT = 10
 REQUIRED_CSV_COLUMNS = {"Company"}
-ALLOWED_STATUSES = {"NEW", "QUALIFIED", "DRAFTED", "APPROVED", "CONTACTED", "REPLIED", "INTERESTED", "MEETING", "WON", "LOST", "DO_NOT_CONTACT"}
+ALLOWED_STATUSES = {
+    "NEW", "QUALIFIED", "DRAFTED", "APPROVED", "CONTACTED", "REPLIED",
+    "INTERESTED", "MEETING", "WON", "LOST", "DO_NOT_CONTACT",
+}
 PHONE_RE = re.compile(r"^\+?[0-9][0-9]{6,14}$")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -130,9 +134,7 @@ def normalize_text(value: str | None) -> str:
 
 def normalize_phone(value: str | None) -> str:
     value = normalize_text(value)
-    if not value:
-        return ""
-    return re.sub(r"[\s().-]", "", value)
+    return re.sub(r"[\s().-]", "", value) if value else ""
 
 
 def valid_phone(value: str) -> bool:
@@ -176,6 +178,7 @@ def row_to_lead(row: dict[str, str]) -> Lead:
 
 
 def score_lead(lead: Lead) -> tuple[int, list[str]]:
+    """Return a deterministic 0–100 data-completeness score for M1/M2 use."""
     score = 0
     reasons: list[str] = []
     checks = [
@@ -234,9 +237,14 @@ def show_leads(connection: sqlite3.Connection, status: str | None = None) -> Non
     if status and status not in ALLOWED_STATUSES:
         raise ValueError(f"Unknown status: {status}")
     if status:
-        rows = connection.execute("SELECT id, company, contact_name, phone, email, status FROM leads WHERE status=? ORDER BY id", (status,)).fetchall()
+        rows = connection.execute(
+            "SELECT id, company, contact_name, phone, email, status FROM leads WHERE status=? ORDER BY id",
+            (status,),
+        ).fetchall()
     else:
-        rows = connection.execute("SELECT id, company, contact_name, phone, email, status FROM leads ORDER BY id").fetchall()
+        rows = connection.execute(
+            "SELECT id, company, contact_name, phone, email, status FROM leads ORDER BY id"
+        ).fetchall()
     if not rows:
         print("No leads found.")
         return
