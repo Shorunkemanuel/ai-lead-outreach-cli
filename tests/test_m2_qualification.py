@@ -69,8 +69,9 @@ class Milestone2QualificationTests(unittest.TestCase):
         result = lead_cli.qualify_lead(lead)
         self.assertIn("decision maker identified", result.reasons)
         self.assertIn("phone available", result.reasons)
-        self.assertIn("email available", result.gaps if result.gaps else ())
+        self.assertNotIn("email available", result.reasons)
         self.assertIn("website unknown", result.gaps)
+        self.assertIn("lead data incomplete", result.gaps)
 
     def test_qualification_is_persisted_to_sqlite(self):
         now = lead_cli.utc_now()
