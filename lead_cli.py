@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """AI Lead Outreach CLI — V1.
 
-Local-first lead ingestion and qualification foundation. External messaging is
-not implemented in this milestone.
+Local-first lead ingestion, deterministic qualification, and outreach foundation.
+External messaging is intentionally disabled in this milestone.
 """
 
 from __future__ import annotations
@@ -45,6 +45,14 @@ class Lead:
     source: str = ""
 
 
+@dataclass(frozen=True)
+class QualificationResult:
+    score: int
+    priority: str
+    reasons: tuple[str, ...]
+    gaps: tuple[str, ...]
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -55,6 +63,17 @@ def load_config(path: str = DEFAULT_CONFIG) -> dict[str, Any]:
         "database": {"path": DEFAULT_DB},
         "outreach": {"daily_limit": DEFAULT_DAILY_LIMIT, "default_message_style": "professional", "dry_run": True},
         "messaging": {"provider": "disabled"},
+        "qualification": {
+            "weights": {
+                "decision_maker": 20,
+                "service_fit": 20,
+                "painpoint": 20,
+                "contactability": 15,
+                "company_fit": 10,
+                "digital_opportunity": 10,
+                "data_quality": 5,
+            }
+        },
     }
     config_path = Path(path)
     if not config_path.exists():
@@ -65,7 +84,12 @@ def load_config(path: str = DEFAULT_CONFIG) -> dict[str, Any]:
         if isinstance(values, dict):
             loaded.setdefault(section, {})
             for key, value in values.items():
-                loaded[section].setdefault(key, value)
+                if isinstance(value, dict):
+                    loaded[section].setdefault(key, {})
+                    for child_key, child_value in value.items():
+                        loaded[section][key].setdefault(child_key, child_value)
+                else:
+                    loaded[section].setdefault(key, value)
         else:
             loaded.setdefault(section, values)
     return loaded
@@ -96,12 +120,19 @@ def initialize_db(connection: sqlite3.Connection) -> None:
             painpoint TEXT DEFAULT '',
             source TEXT DEFAULT '',
             status TEXT NOT NULL DEFAULT 'NEW',
+            qualification_score INTEGER,
+            qualification_priority TEXT,
+            qualification_reasons TEXT DEFAULT '[]',
+            qualification_gaps TEXT DEFAULT '[]',
+            qualified_at TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_identity ON leads(company, phone, email);
         CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status);
         CREATE INDEX IF NOT EXISTS idx_leads_company ON leads(company);
+        CREATE INDEX IF NOT EXISTS idx_leads_priority ON leads(qualification_priority);
+        CREATE INDEX IF NOT EXISTS idx_leads_score ON leads(qualification_score DESC);
 
         CREATE TABLE IF NOT EXISTS outreach (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -125,6 +156,20 @@ def initialize_db(connection: sqlite3.Connection) -> None:
         );
         """
     )
+    # M2 schema migration for databases created by M1.
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(leads)").fetchall()}
+    migrations = {
+        "qualification_score": "INTEGER",
+        "qualification_priority": "TEXT",
+        "qualification_reasons": "TEXT DEFAULT '[]'",
+        "qualification_gaps": "TEXT DEFAULT '[]'",
+        "qualified_at": "TEXT",
+    }
+    for column, definition in migrations.items():
+        if column not in columns:
+            connection.execute(f"ALTER TABLE leads ADD COLUMN {column} {definition}")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_leads_priority ON leads(qualification_priority)")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_leads_score ON leads(qualification_score DESC)")
     connection.commit()
 
 
@@ -177,25 +222,113 @@ def row_to_lead(row: dict[str, str]) -> Lead:
     )
 
 
-def score_lead(lead: Lead) -> tuple[int, list[str]]:
-    """Return a deterministic 0–100 data-completeness score for M1/M2 use."""
+def _employee_count(value: str) -> int | None:
+    value = normalize_text(value).lower().replace(",", "")
+    if not value:
+        return None
+    match = re.search(r"\d+", value)
+    return int(match.group()) if match else None
+
+
+def _is_decision_maker(title: str) -> bool:
+    title = title.lower()
+    patterns = ("ceo", "founder", "co-founder", "owner", "president", "managing director", "director", "partner", "chief")
+    return any(pattern in title for pattern in patterns)
+
+
+def _service_fit(lead: Lead) -> bool:
+    text = f"{lead.industry} {lead.painpoint} {lead.website}".lower()
+    keywords = ("website", "web", "ux", "ui", "mobile", "automation", "ai", "lead", "sales", "software", "ecommerce", "shopify", "digital")
+    return any(keyword in text for keyword in keywords)
+
+
+def _strong_painpoint(painpoint: str) -> bool:
+    text = painpoint.lower()
+    return len(text) >= 25 and any(word in text for word in ("poor", "missing", "manual", "slow", "low", "weak", "problem", "issue", "abandon", "outdated", "lack", "no "))
+
+
+def qualify_lead(lead: Lead, weights: dict[str, int] | None = None) -> QualificationResult:
+    """Deterministic, explainable prospect qualification from 0–100."""
+    weights = weights or {
+        "decision_maker": 20, "service_fit": 20, "painpoint": 20,
+        "contactability": 15, "company_fit": 10, "digital_opportunity": 10,
+        "data_quality": 5,
+    }
     score = 0
     reasons: list[str] = []
-    checks = [
-        (lead.phone, 20, "phone available"),
-        (lead.email, 15, "email available"),
-        (lead.job_title, 20, "contact role available"),
-        (lead.website, 15, "website available"),
-        (lead.painpoint, 15, "painpoint supplied"),
-        (lead.industry, 5, "industry supplied"),
-        (lead.employees, 5, "company size supplied"),
-        (lead.company, 5, "company identified"),
-    ]
-    for present, points, reason in checks:
-        if present:
-            score += points
-            reasons.append(reason)
-    return min(score, 100), reasons
+    gaps: list[str] = []
+
+    if _is_decision_maker(lead.job_title):
+        score += weights["decision_maker"]
+        reasons.append("decision maker identified")
+    elif lead.job_title:
+        score += weights["decision_maker"] // 2
+        reasons.append("contact role identified")
+    else:
+        gaps.append("decision maker role unknown")
+
+    if _service_fit(lead):
+        score += weights["service_fit"]
+        reasons.append("strong service fit")
+    else:
+        gaps.append("service fit unclear")
+
+    if _strong_painpoint(lead.painpoint):
+        score += weights["painpoint"]
+        reasons.append("clear actionable painpoint")
+    elif lead.painpoint:
+        score += weights["painpoint"] // 2
+        reasons.append("painpoint supplied")
+    else:
+        gaps.append("painpoint missing")
+
+    if lead.phone and lead.email:
+        score += weights["contactability"]
+        reasons.append("phone and email available")
+    elif lead.phone or lead.email:
+        score += weights["contactability"] // 2
+        reasons.append("one direct contact method available")
+    else:
+        gaps.append("no direct contact method")
+
+    employees = _employee_count(lead.employees)
+    if employees is not None and 2 <= employees <= 500:
+        score += weights["company_fit"]
+        reasons.append("target-sized company")
+    elif employees is not None:
+        score += weights["company_fit"] // 2
+        reasons.append("company size supplied")
+    else:
+        gaps.append("company size unknown")
+
+    if lead.website and lead.painpoint:
+        score += weights["digital_opportunity"]
+        reasons.append("digital opportunity identified")
+    elif lead.website:
+        score += weights["digital_opportunity"] // 2
+        reasons.append("website available")
+    else:
+        gaps.append("website unknown")
+
+    data_points = sum(bool(value) for value in (lead.company, lead.contact_name, lead.industry, lead.country, lead.source))
+    if data_points >= 4:
+        score += weights["data_quality"]
+        reasons.append("lead data is well populated")
+    elif data_points >= 2:
+        score += weights["data_quality"] // 2
+        reasons.append("basic lead data supplied")
+    else:
+        gaps.append("lead data incomplete")
+
+    score = min(max(score, 0), 100)
+    priority = "HIGH" if score >= 80 else "MEDIUM" if score >= 60 else "LOW" if score >= 40 else "SKIP"
+    return QualificationResult(score, priority, tuple(reasons), tuple(gaps))
+
+
+def score_lead(lead: Lead) -> tuple[int, list[str]]:
+    """Backward-compatible M1 scoring helper; M2 uses qualify_lead()."""
+    result = qualify_lead(lead)
+    return result.score, list(result.reasons)
 
 
 def import_csv(csv_path: str, connection: sqlite3.Connection) -> tuple[int, int, int]:
@@ -233,18 +366,60 @@ def import_csv(csv_path: str, connection: sqlite3.Connection) -> tuple[int, int,
     return imported, duplicates, invalid
 
 
+def qualify_all(connection: sqlite3.Connection, config: dict[str, Any]) -> int:
+    weights = config.get("qualification", {}).get("weights", {})
+    rows = connection.execute("SELECT * FROM leads ORDER BY id").fetchall()
+    for row in rows:
+        lead = Lead(
+            company=row["company"], contact_name=row["contact_name"], job_title=row["job_title"],
+            phone=row["phone"], email=row["email"], website=row["website"], industry=row["industry"],
+            country=row["country"], employees=row["employees"], painpoint=row["painpoint"], source=row["source"],
+        )
+        result = qualify_lead(lead, weights)
+        now = utc_now()
+        status = "QUALIFIED" if result.priority in {"HIGH", "MEDIUM"} else row["status"]
+        connection.execute(
+            """UPDATE leads SET qualification_score=?, qualification_priority=?, qualification_reasons=?,
+               qualification_gaps=?, qualified_at=?, status=?, updated_at=? WHERE id=?""",
+            (result.score, result.priority, json.dumps(result.reasons), json.dumps(result.gaps), now, status, now, row["id"]),
+        )
+    connection.commit()
+    return len(rows)
+
+
+def show_qualified(connection: sqlite3.Connection, priority: str | None = None) -> None:
+    query = "SELECT id, company, contact_name, qualification_score, qualification_priority, status FROM leads"
+    params: tuple[Any, ...] = ()
+    if priority:
+        query += " WHERE qualification_priority=?"
+        params = (priority.upper(),)
+    query += " ORDER BY COALESCE(qualification_score, -1) DESC, id"
+    rows = connection.execute(query, params).fetchall()
+    if not rows:
+        print("No qualified leads found. Run: python3 lead_cli.py qualify")
+        return
+    print(f"\n{'RANK':<6} {'COMPANY':<28} {'SCORE':<7} {'PRIORITY':<10} {'STATUS'}")
+    print("-" * 75)
+    for rank, row in enumerate(rows, 1):
+        print(f"{rank:<6} {row['company'][:27]:<28} {str(row['qualification_score'] or 0):<7} {row['qualification_priority'] or 'UNRATED':<10} {row['status']}")
+    print()
+    for row in rows:
+        reasons = json.loads(row["qualification_reasons"] or "[]")
+        gaps = json.loads(row["qualification_gaps"] or "[]")
+        print(f"#{row['id']} {row['company']} — {row['qualification_score']}/100 ({row['qualification_priority']})")
+        if reasons:
+            print("  Why: " + "; ".join(reasons))
+        if gaps:
+            print("  Gaps: " + "; ".join(gaps))
+
+
 def show_leads(connection: sqlite3.Connection, status: str | None = None) -> None:
     if status and status not in ALLOWED_STATUSES:
         raise ValueError(f"Unknown status: {status}")
     if status:
-        rows = connection.execute(
-            "SELECT id, company, contact_name, phone, email, status FROM leads WHERE status=? ORDER BY id",
-            (status,),
-        ).fetchall()
+        rows = connection.execute("SELECT id, company, contact_name, phone, email, status FROM leads WHERE status=? ORDER BY id", (status,)).fetchall()
     else:
-        rows = connection.execute(
-            "SELECT id, company, contact_name, phone, email, status FROM leads ORDER BY id"
-        ).fetchall()
+        rows = connection.execute("SELECT id, company, contact_name, phone, email, status FROM leads ORDER BY id").fetchall()
     if not rows:
         print("No leads found.")
         return
@@ -273,9 +448,10 @@ def show_stats(connection: sqlite3.Connection, daily_limit: int = DEFAULT_DAILY_
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=APP_NAME)
-    parser.add_argument("command", nargs="?", choices=["import", "leads", "stats", "analyze", "review", "send", "run"])
+    parser.add_argument("command", nargs="?", choices=["import", "leads", "stats", "qualify", "analyze", "review", "send", "run"])
     parser.add_argument("path", nargs="?", help="CSV path for import")
     parser.add_argument("--status", choices=sorted(ALLOWED_STATUSES), help="Filter leads by status")
+    parser.add_argument("--priority", choices=["high", "medium", "low", "skip"], help="Filter qualified leads by priority")
     parser.add_argument("--dry-run", action="store_true", help="Never send external messages")
     parser.add_argument("--config", default=DEFAULT_CONFIG, help="Configuration file")
     args = parser.parse_args()
@@ -293,12 +469,15 @@ def main() -> None:
             show_leads(connection, args.status)
         elif args.command == "stats":
             show_stats(connection, daily_limit)
+        elif args.command == "qualify":
+            count = qualify_all(connection, config)
+            print(f"\nQualification complete: {count} lead(s) scored.")
+            show_qualified(connection, args.priority)
         elif args.command in {"analyze", "review", "send", "run"}:
-            print(f"{args.command} workflow is scheduled for the next milestone.")
-            if args.dry_run or args.command == "run":
-                print("✓ No external messages will be sent by this Milestone 1 implementation.")
+            print(f"{args.command} workflow is scheduled for a later milestone.")
+            print("✓ No external messages will be sent by the current implementation.")
         else:
-            print(f"{APP_NAME}\n\nV1 Milestone 1: lead ingestion + SQLite foundation ready.\n\nExamples:\n  python lead_cli.py import data/leads.example.csv\n  python lead_cli.py leads\n  python lead_cli.py stats")
+            print(f"{APP_NAME}\n\nV1: lead ingestion + SQLite + deterministic qualification.\n\nExamples:\n  python lead_cli.py import data/leads.example.csv\n  python lead_cli.py leads\n  python lead_cli.py qualify\n  python lead_cli.py qualify --priority high\n  python lead_cli.py stats")
     finally:
         connection.close()
 
