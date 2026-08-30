@@ -1,6 +1,7 @@
 import csv
 import importlib.util
 import sqlite3
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,6 +11,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("lead_cli", ROOT / "lead_cli.py")
 lead_cli = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
+# Register the dynamically loaded module before dataclass processes its classes.
+sys.modules[SPEC.name] = lead_cli
 SPEC.loader.exec_module(lead_cli)
 
 
