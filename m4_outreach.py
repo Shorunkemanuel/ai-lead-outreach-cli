@@ -21,7 +21,6 @@ class MessageProvider(Protocol):
 
 class MockProvider:
     """Deterministic provider used by tests and dry-run development."""
-
     def __init__(self, should_fail: bool = False):
         self.should_fail = should_fail
         self.sent: list[tuple[str, str]] = []
@@ -45,50 +44,31 @@ def utc_now() -> str:
 
 
 def initialize_m4(c: sqlite3.Connection) -> None:
-    """Create M4 tables without changing existing M1-M3 data."""
-    c.executescript(
-        """
+    c.executescript("""
         CREATE TABLE IF NOT EXISTS outreach_queue (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            lead_id INTEGER NOT NULL,
-            draft_id INTEGER NOT NULL,
-            destination TEXT NOT NULL,
-            channel TEXT NOT NULL DEFAULT 'whatsapp',
-            status TEXT NOT NULL DEFAULT 'QUEUED',
-            queued_at TEXT NOT NULL,
-            sent_at TEXT,
-            provider_message_id TEXT,
-            error TEXT,
+            id INTEGER PRIMARY KEY AUTOINCREMENT, lead_id INTEGER NOT NULL,
+            draft_id INTEGER NOT NULL, destination TEXT NOT NULL,
+            channel TEXT NOT NULL DEFAULT 'whatsapp', status TEXT NOT NULL DEFAULT 'QUEUED',
+            queued_at TEXT NOT NULL, sent_at TEXT, provider_message_id TEXT, error TEXT,
             FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE,
             FOREIGN KEY (draft_id) REFERENCES outreach_drafts(id) ON DELETE CASCADE
         );
-
         CREATE TABLE IF NOT EXISTS suppression_list (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            lead_id INTEGER,
-            destination TEXT NOT NULL,
-            reason TEXT NOT NULL,
-            created_at TEXT NOT NULL,
+            id INTEGER PRIMARY KEY AUTOINCREMENT, lead_id INTEGER,
+            destination TEXT NOT NULL, reason TEXT NOT NULL, created_at TEXT NOT NULL,
             FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE SET NULL
         );
-
         CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_draft ON outreach_queue(draft_id);
         CREATE INDEX IF NOT EXISTS idx_queue_status ON outreach_queue(status);
         CREATE INDEX IF NOT EXISTS idx_suppression_destination ON suppression_list(destination);
-
         CREATE TABLE IF NOT EXISTS outreach_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            lead_id INTEGER NOT NULL,
-            draft_id INTEGER,
-            queue_id INTEGER,
-            event TEXT NOT NULL,
-            detail TEXT DEFAULT '',
-            created_at TEXT NOT NULL,
+            id INTEGER PRIMARY KEY AUTOINCREMENT, lead_id INTEGER NOT NULL,
+            draft_id INTEGER, queue_id INTEGER, event TEXT NOT NULL,
+            detail TEXT DEFAULT '', created_at TEXT NOT NULL,
             FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE
         );
         CREATE INDEX IF NOT EXISTS idx_events_lead ON outreach_events(lead_id);
-        """
-    )
+    """)
     c.commit()
 
 
@@ -114,13 +94,28 @@ def suppress(c: sqlite3.Connection, destination: str, reason: str, lead_id: int 
 
 
 def is_suppressed(c: sqlite3.Connection, destination: str) -> bool:
-    return c.execute(
-        "SELECT 1 FROM suppression_list WHERE destination=? LIMIT 1", (destination.strip(),)
-    ).fetchone() is not None
+    return c.execute("SELECT 1 FROM suppression_list WHERE destination=? LIMIT 1", (destination.strip(),)).fetchone() is not None
 
 
-def approve_and_queue(c: sqlite3.Connection, draft_id: int) -> QueueResult:
-    """Approve an existing GENERATED draft and queue it, with safety gates."""
+def mark_draft_approved(c: sqlite3.Connection, draft_id: int) -> None:
+    row = c.execute("SELECT lead_id,status FROM outreach_drafts WHERE id=?", (draft_id,)).fetchone()
+    if not row:
+        raise ValueError("draft not found")
+    if row["status"] != "GENERATED":
+        raise ValueError("only GENERATED drafts can be approved")
+    now = utc_now()
+    c.execute("UPDATE outreach_drafts SET status='APPROVED', reviewed_at=? WHERE id=?", (now, draft_id))
+    _event(c, row["lead_id"], "APPROVED", "human approval recorded", draft_id)
+    c.commit()
+
+
+def approve_draft(c: sqlite3.Connection, draft_id: int) -> None:
+    """Public M4 approval transition: GENERATED -> APPROVED."""
+    mark_draft_approved(c, draft_id)
+
+
+def queue_draft(c: sqlite3.Connection, draft_id: int) -> QueueResult:
+    """Public M4 queue transition: APPROVED -> QUEUED."""
     draft = c.execute(
         "SELECT d.*, l.status AS lead_status, l.phone, l.email FROM outreach_drafts d JOIN leads l ON l.id=d.lead_id WHERE d.id=?",
         (draft_id,),
@@ -129,8 +124,8 @@ def approve_and_queue(c: sqlite3.Connection, draft_id: int) -> QueueResult:
         return QueueResult(False, "draft not found")
     if draft["status"] != "APPROVED":
         return QueueResult(False, "draft must be APPROVED before queueing")
-    if draft["lead_status"] not in {"QUALIFIED", "DRAFTED", "APPROVED"}:
-        return QueueResult(False, f"lead status blocks outreach: {draft['lead_status']}")
+    if draft["lead_status"] == "DO_NOT_CONTACT":
+        return QueueResult(False, "lead is DO_NOT_CONTACT")
     destination = (draft["phone"] or draft["email"] or "").strip()
     if not destination:
         return QueueResult(False, "no valid destination")
@@ -151,16 +146,9 @@ def approve_and_queue(c: sqlite3.Connection, draft_id: int) -> QueueResult:
     return QueueResult(True, "queued", queue_id)
 
 
-def mark_draft_approved(c: sqlite3.Connection, draft_id: int) -> None:
-    row = c.execute("SELECT lead_id,status FROM outreach_drafts WHERE id=?", (draft_id,)).fetchone()
-    if not row:
-        raise ValueError("draft not found")
-    if row["status"] != "GENERATED":
-        raise ValueError("only GENERATED drafts can be approved")
-    now = utc_now()
-    c.execute("UPDATE outreach_drafts SET status='APPROVED', reviewed_at=? WHERE id=?", (now, draft_id))
-    _event(c, row["lead_id"], "APPROVED", "human approval recorded", draft_id)
-    c.commit()
+def approve_and_queue(c: sqlite3.Connection, draft_id: int) -> QueueResult:
+    """Backward-compatible explicit queue helper; requires prior approval."""
+    return queue_draft(c, draft_id)
 
 
 def send_queued(c: sqlite3.Connection, provider: MessageProvider, daily_limit: int = DEFAULT_DAILY_LIMIT, dry_run: bool = False) -> dict[str, int]:
@@ -169,9 +157,7 @@ def send_queued(c: sqlite3.Connection, provider: MessageProvider, daily_limit: i
     row = c.execute("SELECT messages_sent FROM daily_usage WHERE usage_date=?", (today,)).fetchone()
     sent_today = row[0] if row else 0
     remaining = max(0, daily_limit - sent_today)
-    rows = c.execute(
-        "SELECT q.*, d.message FROM outreach_queue q JOIN outreach_drafts d ON d.id=q.draft_id WHERE q.status='QUEUED' ORDER BY q.id"
-    ).fetchall()
+    rows = c.execute("SELECT q.*, d.message FROM outreach_queue q JOIN outreach_drafts d ON d.id=q.draft_id WHERE q.status='QUEUED' ORDER BY q.id").fetchall()
     processed = sent = failed = blocked = 0
     for q in rows:
         if remaining <= 0:
@@ -201,3 +187,15 @@ def send_queued(c: sqlite3.Connection, provider: MessageProvider, daily_limit: i
         remaining -= 1
     c.commit()
     return {"processed": processed, "sent": sent, "failed": failed, "blocked": blocked}
+
+
+def execute_queue(c: sqlite3.Connection, provider: MessageProvider | None = None, daily_limit: int = DEFAULT_DAILY_LIMIT, dry_run: bool = False) -> dict[str, int]:
+    """Public M4 execution entry point. Real sending requires an injected provider."""
+    if dry_run:
+        class _NoSendProvider:
+            def send(self, destination: str, message: str) -> str:
+                raise AssertionError("dry_run must not call provider")
+        provider = _NoSendProvider()
+    if provider is None:
+        raise ValueError("provider is required unless dry_run=True")
+    return send_queued(c, provider, daily_limit=daily_limit, dry_run=dry_run)
