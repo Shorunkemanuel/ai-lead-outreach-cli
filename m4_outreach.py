@@ -16,6 +16,194 @@ from messaging import get_provider, is_supported_provider
 
 DEFAULT_DAILY_LIMIT = 10
 
+DEFAULT_GLOBAL_DAILY_LIMIT = 30
+DEFAULT_CHANNEL_LIMITS = {
+    "email": 20,
+    "whatsapp": 10,
+}
+DEFAULT_PROVIDER_LIMITS = {
+    "mock_email": 20,
+    "mock_whatsapp": 10,
+}
+DEFAULT_COOLDOWN_DAYS = 7
+DEFAULT_DUPLICATE_PROTECTION = True
+
+
+@dataclass(frozen=True)
+class SafetyDecision:
+    allowed: bool
+    reason: str
+
+
+def get_safety_config() -> dict:
+    """Return the conservative application-level M7 safety configuration."""
+    return {
+        "global_daily_limit": DEFAULT_GLOBAL_DAILY_LIMIT,
+        "channel_limits": dict(DEFAULT_CHANNEL_LIMITS),
+        "provider_limits": dict(DEFAULT_PROVIDER_LIMITS),
+        "cooldown_days": DEFAULT_COOLDOWN_DAYS,
+        "duplicate_protection": DEFAULT_DUPLICATE_PROTECTION,
+    }
+
+
+def get_channel_limit(channel: str) -> int:
+    channel = channel.strip().lower()
+    return DEFAULT_CHANNEL_LIMITS.get(channel, 0)
+
+
+def get_provider_limit(provider: str) -> int:
+    provider = provider.strip().lower()
+    return DEFAULT_PROVIDER_LIMITS.get(provider, 0)
+
+
+def _sent_count_today(
+    c: sqlite3.Connection,
+    *,
+    channel: str | None = None,
+    provider: str | None = None,
+) -> int:
+    """Count successfully sent messages for today's safety accounting."""
+    today = datetime.now(timezone.utc).date().isoformat()
+
+    if channel is None and provider is None:
+        row = c.execute(
+            """
+            SELECT messages_sent
+            FROM daily_usage
+            WHERE usage_date=?
+            """,
+            (today,),
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    query = """
+        SELECT COUNT(*)
+        FROM outreach_queue
+        WHERE status='SENT'
+          AND substr(sent_at, 1, 10)=?
+    """
+    params: list[str] = [today]
+
+    if channel is not None:
+        query += " AND channel=?"
+        params.append(channel)
+
+    if provider is not None:
+        query += " AND provider=?"
+        params.append(provider)
+
+    row = c.execute(query, params).fetchone()
+    return int(row[0]) if row else 0
+
+
+def check_duplicate_send(
+    c: sqlite3.Connection,
+    lead_id: int,
+    destination: str,
+) -> bool:
+    """Return True when this lead/destination has already been successfully contacted."""
+    row = c.execute(
+        """
+        SELECT 1
+        FROM outreach_queue
+        WHERE lead_id=?
+          AND destination=?
+          AND status='SENT'
+        LIMIT 1
+        """,
+        (lead_id, destination.strip()),
+    ).fetchone()
+    return row is not None
+
+
+def check_cooldown(
+    c: sqlite3.Connection,
+    lead_id: int,
+    cooldown_days: int = DEFAULT_COOLDOWN_DAYS,
+) -> bool:
+    """Return True when the lead is still inside the post-contact cooldown."""
+    if cooldown_days <= 0:
+        return False
+
+    row = c.execute(
+        """
+        SELECT sent_at
+        FROM outreach_queue
+        WHERE lead_id=?
+          AND status='SENT'
+          AND sent_at IS NOT NULL
+        ORDER BY sent_at DESC
+        LIMIT 1
+        """,
+        (lead_id,),
+    ).fetchone()
+
+
+    if not row:
+        return False
+
+    last_sent = datetime.fromisoformat(str(row[0]))
+
+    if last_sent.tzinfo is None:
+        last_sent = last_sent.replace(tzinfo=timezone.utc)
+    else:
+        last_sent = last_sent.astimezone(timezone.utc)
+
+    elapsed = datetime.now(timezone.utc) - last_sent
+    return elapsed.total_seconds() < cooldown_days * 86400
+
+
+
+def check_outreach_safety(
+    c: sqlite3.Connection,
+    *,
+    lead_id: int,
+    destination: str,
+    channel: str,
+    provider: str,
+) -> SafetyDecision:
+    """Evaluate M7 safety gates without sending anything."""
+    config = get_safety_config()
+
+    channel = channel.strip().lower()
+    provider = provider.strip().lower()
+    destination = destination.strip()
+
+    if not destination:
+        return SafetyDecision(False, "destination is required")
+
+    if channel not in config["channel_limits"]:
+        return SafetyDecision(False, f"unsupported channel: {channel}")
+
+    if provider not in config["provider_limits"]:
+        return SafetyDecision(False, f"unsupported provider: {provider}")
+
+    if is_suppressed(c, destination):
+        return SafetyDecision(False, "destination is suppressed")
+
+    if config["duplicate_protection"] and check_duplicate_send(
+        c, lead_id, destination
+    ):
+        return SafetyDecision(False, "duplicate send blocked")
+
+    if check_cooldown(c, lead_id, config["cooldown_days"]):
+        return SafetyDecision(False, "lead is inside cooldown period")
+
+    global_count = _sent_count_today(c)
+    if global_count >= config["global_daily_limit"]:
+        return SafetyDecision(False, "global daily limit reached")
+
+    channel_count = _sent_count_today(c, channel=channel)
+    if channel_count >= config["channel_limits"][channel]:
+        return SafetyDecision(False, f"{channel} daily limit reached")
+
+    provider_count = _sent_count_today(c, provider=provider)
+    if provider_count >= config["provider_limits"][provider]:
+        return SafetyDecision(False, f"{provider} daily limit reached")
+
+    return SafetyDecision(True, "outreach allowed")
+
+
 class MessageProvider(Protocol):
     def send(self, destination: str, message: str) -> str: ...
 
