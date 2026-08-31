@@ -24,14 +24,43 @@ V1 intentionally stays small: one Python application script, SQLite persistence,
 - Daily outreach limit
 - SQLite outreach history
 - Messaging-provider abstraction
-- Basic statistics
+- Statistics and CLI reporting
 - Secure configuration without secrets in source control
+
+## Milestones
+
+- M1 — Lead ingestion & database
+- M2 — Lead scoring & qualification
+- M3 — Ollama AI integration
+- M4 — AI message generation
+- M5 — Human review workflow
+- M6 — Messaging provider
+- M7 — Daily limits & duplicate safety
+- M8 — Statistics & CLI polish
+- M9 — Full V1 testing
+
+## M8 reporting
+
+M8 adds a read-only statistics command over the existing M1-M7 SQLite data:
+
+```bash
+python3 m8_stats.py
+python3 m8_stats.py --section leads
+python3 m8_stats.py --section drafts
+python3 m8_stats.py --section outreach
+python3 m8_stats.py --json
+python3 m8_stats.py --help
+```
+
+The reporter does not approve, queue, send, suppress, retry, or otherwise mutate outreach state.
 
 ## Repository structure
 
 ```text
 ai-lead-outreach-cli/
 ├── lead_cli.py
+├── m4_outreach.py
+├── m8_stats.py
 ├── README.md
 ├── LICENSE
 ├── .gitignore
@@ -43,9 +72,11 @@ ai-lead-outreach-cli/
 │   ├── architecture.md
 │   ├── requirements.md
 │   ├── cli-reference.md
-│   └── ai-prompt-spec.md
+│   ├── ai-prompt-spec.md
+│   └── m8-statistics-cli.md
 └── tests/
-    └── README.md
+    ├── README.md
+    └── test_m8_stats.py
 ```
 
 ## Local-first requirements
@@ -68,4 +99,4 @@ ai-lead-outreach-cli/
 
 ## Development
 
-Start with the documentation in `docs/requirements.md` and `docs/architecture.md`. The application is intentionally designed as a single Python script for V1; logical separation is maintained through functions/classes rather than premature multi-package decomposition.
+Start with the documentation in `docs/requirements.md`, `docs/architecture.md`, and `docs/m8-statistics-cli.md`. The application is intentionally designed as a single Python script for V1; M8's reporting module is read-only so the existing M1-M7 workflow remains unchanged.
