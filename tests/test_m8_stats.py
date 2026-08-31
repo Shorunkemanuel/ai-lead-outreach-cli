@@ -23,7 +23,7 @@ class Milestone8StatisticsTests(unittest.TestCase):
         stats = m8_stats.collect_stats(self.connection, daily_limit=30)
         self.assertEqual(stats["leads"]["total"], 0)
         self.assertEqual(stats["leads"]["by_status"], {})
-        self.assertEqual(stats["leads"]["qualification"]["average_score"], None)
+        self.assertIsNone(stats["leads"]["qualification"]["average_score"])
         self.assertEqual(stats["outreach"]["sent_today"], 0)
         self.assertEqual(stats["outreach"]["remaining_today"], 30)
 
@@ -58,6 +58,24 @@ class Milestone8StatisticsTests(unittest.TestCase):
 
     def test_outreach_statistics_are_channel_and_provider_aware(self):
         now = lead_cli.utc_now()
+        for lead_id in range(1, 4):
+            self.connection.execute(
+                """
+                INSERT INTO leads
+                (company, status, created_at, updated_at)
+                VALUES (?, 'APPROVED', ?, ?)
+                """,
+                (f"Company {lead_id}", now, now),
+            )
+            self.connection.execute(
+                """
+                INSERT INTO outreach_drafts
+                (lead_id, status, message, model, prompt, created_at)
+                VALUES (?, 'APPROVED', ?, 'test-model', 'test-prompt', ?)
+                """,
+                (lead_id, f"Message {lead_id}", now),
+            )
+
         for lead_id, draft_id, channel, provider in (
             (1, 1, "email", "mock_email"),
             (2, 2, "email", "mock_email"),
@@ -72,6 +90,7 @@ class Milestone8StatisticsTests(unittest.TestCase):
                 """,
                 (lead_id, draft_id, f"dest-{lead_id}", channel, provider, now, now),
             )
+
         today = now[:10]
         self.connection.execute(
             "INSERT INTO daily_usage(usage_date, messages_sent) VALUES(?, ?)",
@@ -97,8 +116,8 @@ class Milestone8StatisticsTests(unittest.TestCase):
         self.assertIn("Outreach", output.getvalue())
 
     def test_json_output_is_valid(self):
-        output = io.StringIO()
         stats = m8_stats.collect_stats(self.connection)
+        output = io.StringIO()
         with redirect_stdout(output):
             print(json.dumps(stats, sort_keys=True))
         decoded = json.loads(output.getvalue())
@@ -106,7 +125,9 @@ class Milestone8StatisticsTests(unittest.TestCase):
 
     def test_cli_parser_exposes_polished_reporting_options(self):
         parser = m8_stats.build_parser()
-        args = parser.parse_args(["--db", "custom.db", "--limit", "25", "--section", "outreach", "--json"])
+        args = parser.parse_args(
+            ["--db", "custom.db", "--limit", "25", "--section", "outreach", "--json"]
+        )
         self.assertEqual(args.db, "custom.db")
         self.assertEqual(args.limit, 25)
         self.assertEqual(args.section, "outreach")
