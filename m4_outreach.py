@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 import sqlite3
 from typing import Optional, Protocol
 
+from messaging import get_provider, is_supported_provider
+
 DEFAULT_DAILY_LIMIT = 10
 
 class MessageProvider(Protocol):
@@ -42,7 +44,9 @@ def initialize_m4(c: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS daily_usage (usage_date TEXT PRIMARY KEY, messages_sent INTEGER NOT NULL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS outreach_queue (
             id INTEGER PRIMARY KEY AUTOINCREMENT, lead_id INTEGER NOT NULL, draft_id INTEGER NOT NULL,
-            destination TEXT NOT NULL, channel TEXT NOT NULL DEFAULT 'whatsapp', status TEXT NOT NULL DEFAULT 'QUEUED',
+            destination TEXT NOT NULL, channel TEXT NOT NULL DEFAULT 'whatsapp',
+            provider TEXT NOT NULL DEFAULT 'mock_whatsapp',
+            status TEXT NOT NULL DEFAULT 'QUEUED',
             queued_at TEXT NOT NULL, sent_at TEXT, provider_message_id TEXT, error TEXT,
             FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE,
             FOREIGN KEY (draft_id) REFERENCES outreach_drafts(id) ON DELETE CASCADE
@@ -62,6 +66,12 @@ def initialize_m4(c: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_events_lead ON outreach_events(lead_id);
     """)
+    # Migrate databases created before M6.
+    columns = {row["name"] for row in c.execute("PRAGMA table_info(outreach_queue)").fetchall()}
+    if "provider" not in columns:
+        c.execute(
+            "ALTER TABLE outreach_queue ADD COLUMN provider TEXT NOT NULL DEFAULT 'mock_whatsapp'"
+        )
     c.commit()
 
 def _event(c: sqlite3.Connection, lead_id: int, event: str, detail: str = "", draft_id: int | None = None, queue_id: int | None = None) -> None:
@@ -98,34 +108,115 @@ def approve_draft(c: sqlite3.Connection, draft_id: int) -> None:
     """Public approval transition: GENERATED -> APPROVED."""
     mark_draft_approved(c, draft_id)
 
-def queue_draft(c: sqlite3.Connection, draft_id: int) -> QueueResult:
-    """Public queue transition: APPROVED -> QUEUED."""
+def queue_draft(
+    c: sqlite3.Connection,
+    draft_id: int,
+    channel: str = "whatsapp",
+    provider: str = "mock_whatsapp",
+) -> QueueResult:
+    """Queue an approved draft for a specific channel/provider."""
+
     initialize_m4(c)
-    draft = c.execute("SELECT d.*, l.status AS lead_status, l.phone, l.email FROM outreach_drafts d JOIN leads l ON l.id=d.lead_id WHERE d.id=?", (draft_id,)).fetchone()
+
+    channel = channel.strip().lower()
+    provider = provider.strip().lower()
+
+    if channel not in {"email", "whatsapp"}:
+        return QueueResult(False, f"unsupported channel: {channel}")
+
+    if not is_supported_provider(provider, channel=channel):
+        raise ValueError(f"Unsupported messaging provider: {channel}/{provider}")
+
+    draft = c.execute(
+        """
+        SELECT d.*, l.status AS lead_status, l.phone, l.email
+        FROM outreach_drafts d
+        JOIN leads l ON l.id=d.lead_id
+        WHERE d.id=?
+        """,
+        (draft_id,),
+    ).fetchone()
+
     if not draft:
         return QueueResult(False, "draft not found")
+
     if draft["status"] != "APPROVED":
         return QueueResult(False, "draft must be APPROVED before queueing")
+
     if draft["lead_status"] == "DO_NOT_CONTACT":
         return QueueResult(False, "lead is DO_NOT_CONTACT")
-    destination = (draft["phone"] or draft["email"] or "").strip()
+
+    if channel == "email":
+        destination = (draft["email"] or "").strip()
+    else:
+        destination = (draft["phone"] or "").strip()
+
     if not destination:
-        return QueueResult(False, "no valid destination")
+        return QueueResult(False, f"no valid {channel} destination")
+
     if is_suppressed(c, destination):
         return QueueResult(False, "destination is suppressed")
-    existing = c.execute("SELECT id,status FROM outreach_queue WHERE draft_id=?", (draft_id,)).fetchone()
+
+    existing = c.execute(
+        "SELECT id,status FROM outreach_queue WHERE draft_id=?",
+        (draft_id,),
+    ).fetchone()
+
     if existing:
-        return QueueResult(False, "draft is already queued or processed", existing["id"])
+        return QueueResult(
+            False,
+            "draft is already queued or processed",
+            existing["id"],
+        )
+
     now = utc_now()
-    cur = c.execute("INSERT INTO outreach_queue(lead_id,draft_id,destination,channel,status,queued_at) VALUES(?,?,?,?,?,?)", (draft["lead_id"], draft_id, destination, "whatsapp", "QUEUED", now))
+
+    cur = c.execute(
+        """
+        INSERT INTO outreach_queue(
+            lead_id, draft_id, destination, channel, provider,
+            status, queued_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            draft["lead_id"],
+            draft_id,
+            destination,
+            channel,
+            provider,
+            "QUEUED",
+            now,
+        ),
+    )
+
     queue_id = cur.lastrowid
-    c.execute("UPDATE leads SET status='APPROVED', updated_at=? WHERE id=?", (now, draft["lead_id"]))
-    _event(c, draft["lead_id"], "QUEUED", "approved draft queued", draft_id, queue_id)
+
+    c.execute(
+        "UPDATE leads SET status='APPROVED', updated_at=? WHERE id=?",
+        (now, draft["lead_id"]),
+    )
+
+    _event(
+        c,
+        draft["lead_id"],
+        "QUEUED",
+        f"approved draft queued via {channel}/{provider}",
+        draft_id,
+        queue_id,
+    )
+
     c.commit()
+
     return QueueResult(True, "queued", queue_id)
 
-def approve_and_queue(c: sqlite3.Connection, draft_id: int) -> QueueResult:
-    return queue_draft(c, draft_id)
+def approve_and_queue(
+    c: sqlite3.Connection,
+    draft_id: int,
+    channel: str = "whatsapp",
+    provider: str = "mock_whatsapp",
+) -> QueueResult:
+    return queue_draft(c, draft_id, channel=channel, provider=provider)
 
 def send_queued(c: sqlite3.Connection, provider: MessageProvider, daily_limit: int = DEFAULT_DAILY_LIMIT, dry_run: bool = False) -> dict[str, int]:
     """Process queued messages once. No automatic retry is performed."""
