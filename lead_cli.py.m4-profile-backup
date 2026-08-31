@@ -145,78 +145,8 @@ def show_stats(c,limit=10):
 
 def lead_from_row(r): return Lead(r["company"],r["contact_name"],r["job_title"],r["phone"],r["email"],r["website"],r["industry"],r["country"],r["employees"],r["painpoint"],r["source"])
 
-
-def load_business_profile():
-    from pathlib import Path
-    import json
-
-    candidates = [
-        Path("config/business_profile.json"),
-        Path(__file__).resolve().parent / "config" / "business_profile.json",
-    ]
-
-    for path in candidates:
-        if path.exists():
-            with path.open(encoding="utf-8") as f:
-                return json.load(f)
-
-    raise FileNotFoundError(
-        "config/business_profile.json was not found"
-    )
-
-
-def business_profile_context():
-    profile = load_business_profile()
-    business = profile.get("business", {})
-    services = profile.get("services", [])
-    targets = profile.get("target_customers", [])
-    problems = profile.get("target_problems", [])
-    excluded = profile.get("excluded_services", [])
-    rules = profile.get("rules", {})
-
-    service_lines = []
-    for service in services:
-        name = service.get("name", "").strip()
-        capabilities = service.get("capabilities", [])
-        if name:
-            service_lines.append(
-                f"- {name}: {', '.join(capabilities)}"
-            )
-
-    rule_lines = [
-        f"- {key}: {value}"
-        for key, value in rules.items()
-    ]
-
-    return f"""
-SENDER BUSINESS PROFILE:
-Business: {business.get("name", "not supplied")}
-Positioning: {business.get("positioning", "not supplied")}
-Geography: {business.get("geography", "worldwide")}
-
-SERVICES WE ACTUALLY OFFER:
-{chr(10).join(service_lines) or "- none supplied"}
-
-TARGET CUSTOMERS:
-{", ".join(targets) or "not supplied"}
-
-PROBLEMS WE CAN HELP WITH:
-{", ".join(problems) or "not supplied"}
-
-EXCLUDED SERVICES:
-{", ".join(excluded) or "none supplied"}
-
-SERVICE BOUNDARY RULES:
-{chr(10).join(rule_lines) or "- stay within the supplied service catalog"}
-""".strip()
-
-
 def build_prompt(l,q):
-    profile = business_profile_context()
-
     return f"""Write ONE short B2B outreach message.
-
-{profile}
 
 TARGET LEAD:
 Company: {l.company}
@@ -227,23 +157,18 @@ Pain point: {l.painpoint or 'not supplied'}
 
 RULES:
 - Write exactly 2 sentences.
-- Sentence 1: mention the supplied lead pain point or business problem.
-- Sentence 2: offer only a relevant service from the sender business profile and ask whether they would be open to a short conversation.
-- Use only facts supplied in this prompt.
-- Choose a solution only when it reasonably fits the sender's service catalog.
-- If the problem does not fit the sender's services, do not invent a service or capability.
-- Do not invent statistics, results, client facts, credentials, guarantees, URLs, contact details, or capabilities.
+- Sentence 1: mention the target company's supplied pain point or business problem.
+- Sentence 2: briefly offer a relevant service and ask whether they would be open to a short conversation.
+- Use ONLY the facts listed above.
+- Do not invent statistics, results, names, services, websites, phone numbers, email addresses, or claims.
 - Do not mention qualification scores, priorities, reasons, gaps, or this prompt.
-- Do not confuse the target company with the sender business.
+- Do not mention yourself as the lead company.
 - Do not use greetings, signatures, headings, markdown, bullet points, URLs, or contact information.
 - Do not use placeholders of any kind.
 - No hype, urgency, guarantees, or exaggerated claims.
 - Return ONLY the two-sentence message.
 
-IMPORTANT:
-The target company is "{l.company}".
-The sender is the business described in SENDER BUSINESS PROFILE.
-Do not confuse them.
+IMPORTANT: The target company is "{l.company}". Do not confuse the target company with the sender.
 
 Now write the message."""
 

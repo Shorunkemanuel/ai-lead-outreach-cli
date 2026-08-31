@@ -1,0 +1,145 @@
+{
+  "business": {
+    "name": "EO Designs",
+    "positioning": "UX, AI, web and app development, lead generation and business automation consultant",
+    "geography": "Worldwide"
+  },
+
+  "services": [
+    {
+      "name": "UX/UI Design",
+      "capabilities": [
+        "UX research",
+        "user flows",
+        "information architecture",
+        "wireframes",
+        "UI design",
+        "responsive design",
+        "accessibility-focused design",
+        "design systems"
+      ]
+    },
+    {
+      "name": "Web Development",
+      "capabilities": [
+        "business websites",
+        "web applications",
+        "responsive websites",
+        "frontend development",
+        "backend development",
+        "API integration"
+      ]
+    },
+    {
+      "name": "App Development",
+      "capabilities": [
+        "mobile applications",
+        "React Native applications",
+        "cross-platform applications",
+        "PWA development"
+      ]
+    },
+    {
+      "name": "AI Development",
+      "capabilities": [
+        "AI-powered applications",
+        "local AI integration",
+        "LLM integration",
+        "AI-assisted workflows"
+      ]
+    },
+    {
+      "name": "AI Integration",
+      "capabilities": [
+        "AI API integration",
+        "LLM integration",
+        "AI features in existing applications",
+        "automation using AI"
+      ]
+    },
+    {
+      "name": "AI Automation",
+      "capabilities": [
+        "AI-assisted business workflows",
+        "lead follow-up automation",
+        "content workflows",
+        "repetitive task automation"
+      ]
+    },
+    {
+      "name": "Business Automation",
+      "capabilities": [
+        "workflow automation",
+        "process automation",
+        "lead management workflows",
+        "notification workflows",
+        "internal business tools"
+      ]
+    },
+    {
+      "name": "Lead Generation",
+      "capabilities": [
+        "B2B lead research",
+        "lead qualification",
+        "prospecting workflows",
+        "lead data organization",
+        "outreach workflow automation"
+      ]
+    }
+  ],
+
+  "target_customers": [
+    "small businesses",
+    "startups",
+    "founders",
+    "professional services",
+    "software companies",
+    "technology companies",
+    "e-commerce businesses",
+    "agencies",
+    "consultants",
+    "online businesses",
+    "organizations needing digital products"
+  ],
+
+  "target_problems": [
+    "poor website experience",
+    "outdated websites",
+    "difficult-to-use digital products",
+    "manual business workflows",
+    "repetitive administrative tasks",
+    "inefficient lead management",
+    "slow lead follow-up",
+    "lack of AI capabilities",
+    "need for AI integration",
+    "need for custom web applications",
+    "need for mobile applications",
+    "difficulty organizing prospecting workflows"
+  ],
+
+  "excluded_services": [
+    "legal services",
+    "accounting services",
+    "medical services",
+    "financial advisory",
+    "paid advertising management",
+    "SEO agency services",
+    "ERP implementation",
+    "IT infrastructure management",
+    "cybersecurity consulting",
+    "hardware installation",
+    "physical logistics consulting",
+    "business process consulting outside automation",
+    "guaranteed sales or revenue generation"
+  ],
+
+  "rules": {
+    "worldwide": true,
+    "never_invent_services": true,
+    "never_invent_results": true,
+    "never_invent_statistics": true,
+    "never_guarantee_results": true,
+    "never_claim_unverified_client_facts": true,
+    "stay_within_service_catalog": true
+  }
+}
