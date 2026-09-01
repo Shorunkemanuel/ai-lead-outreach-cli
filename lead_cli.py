@@ -46,6 +46,67 @@ def load_config(path=DEFAULT_CONFIG):
 def connect_db(path):
     c=sqlite3.connect(path);c.row_factory=sqlite3.Row;c.execute("PRAGMA foreign_keys=ON");initialize_db(c);return c
 
+def init_db(c):
+    """Compatibility entry point for V1 tests and integrations.
+
+    Initializes the complete V1 workflow schema, including outreach
+    queue and suppression tables required by the M4 safety layer.
+    """
+    initialize_db(c)
+
+    c.executescript("""
+        CREATE TABLE IF NOT EXISTS outreach_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lead_id INTEGER NOT NULL,
+            draft_id INTEGER NOT NULL,
+            destination TEXT NOT NULL,
+            channel TEXT NOT NULL DEFAULT 'whatsapp',
+            provider TEXT NOT NULL DEFAULT 'mock_whatsapp',
+            status TEXT NOT NULL DEFAULT 'QUEUED',
+            queued_at TEXT NOT NULL,
+            sent_at TEXT,
+            provider_message_id TEXT,
+            error TEXT,
+            FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE,
+            FOREIGN KEY (draft_id) REFERENCES outreach_drafts(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS suppression_list (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lead_id INTEGER,
+            destination TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE SET NULL
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_draft
+            ON outreach_queue(draft_id);
+
+        CREATE INDEX IF NOT EXISTS idx_queue_status
+            ON outreach_queue(status);
+
+        CREATE INDEX IF NOT EXISTS idx_suppression_destination
+            ON suppression_list(destination);
+
+        CREATE TABLE IF NOT EXISTS outreach_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lead_id INTEGER NOT NULL,
+            draft_id INTEGER,
+            queue_id INTEGER,
+            event TEXT NOT NULL,
+            detail TEXT DEFAULT '',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (lead_id) REFERENCES leads(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_events_lead
+            ON outreach_events(lead_id);
+    """)
+
+    c.commit()
+
+
 def initialize_db(c):
     c.executescript("""CREATE TABLE IF NOT EXISTS leads(id INTEGER PRIMARY KEY AUTOINCREMENT,company TEXT NOT NULL,contact_name TEXT DEFAULT '',job_title TEXT DEFAULT '',phone TEXT DEFAULT '',email TEXT DEFAULT '',website TEXT DEFAULT '',industry TEXT DEFAULT '',country TEXT DEFAULT '',employees TEXT DEFAULT '',painpoint TEXT DEFAULT '',source TEXT DEFAULT '',status TEXT NOT NULL DEFAULT 'NEW',qualification_score INTEGER,qualification_priority TEXT,qualification_reasons TEXT DEFAULT '[]',qualification_gaps TEXT DEFAULT '[]',qualified_at TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL); CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_identity ON leads(company,phone,email); CREATE INDEX IF NOT EXISTS idx_leads_status ON leads(status); CREATE INDEX IF NOT EXISTS idx_leads_company ON leads(company); CREATE TABLE IF NOT EXISTS outreach(id INTEGER PRIMARY KEY AUTOINCREMENT,lead_id INTEGER NOT NULL,message TEXT NOT NULL,original_message TEXT DEFAULT '',channel TEXT NOT NULL DEFAULT 'whatsapp',status TEXT NOT NULL DEFAULT 'DRAFT',generated_at TEXT NOT NULL,approved_at TEXT,sent_at TEXT,error TEXT,FOREIGN KEY(lead_id) REFERENCES leads(id) ON DELETE CASCADE); CREATE TABLE IF NOT EXISTS daily_usage(usage_date TEXT PRIMARY KEY,messages_sent INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS outreach_drafts(id INTEGER PRIMARY KEY AUTOINCREMENT,lead_id INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'GENERATED',message TEXT NOT NULL,model TEXT NOT NULL,prompt TEXT NOT NULL,validation_error TEXT DEFAULT '',created_at TEXT NOT NULL,reviewed_at TEXT,FOREIGN KEY(lead_id) REFERENCES leads(id) ON DELETE CASCADE);""")
     cols={r[1] for r in c.execute("PRAGMA table_info(leads)")};migrations={"qualification_score":"INTEGER","qualification_priority":"TEXT","qualification_reasons":"TEXT DEFAULT '[]'","qualification_gaps":"TEXT DEFAULT '[]'","qualified_at":"TEXT"}
@@ -100,7 +161,30 @@ def qualify_lead(l,weights=None):
     else:gaps.append("lead data incomplete")
     s=min(max(s,0),100);p="HIGH" if s>=80 else "MEDIUM" if s>=60 else "LOW" if s>=40 else "SKIP";return QualificationResult(s,p,tuple(reasons),tuple(gaps))
 
-def score_lead(l): r=qualify_lead(l);return r.score,list(r.reasons)
+class LeadScore(int):
+    """Backward-compatible bounded score that also unpacks with reasons."""
+
+    def __new__(cls, score, reasons):
+        obj = int.__new__(cls, int(score))
+        obj.reasons = list(reasons)
+        return obj
+
+    def __iter__(self):
+        yield int(self)
+        yield self.reasons
+
+
+def score_lead(l):
+    """Return a bounded score compatible with both M1 and M9.
+
+    The result behaves like an integer for numeric comparisons and can also
+    be unpacked as ``score, reasons = score_lead(lead)``.
+    """
+    if isinstance(l, dict):
+        l = row_to_lead(l)
+    r = qualify_lead(l)
+    return LeadScore(r.score, r.reasons)
+
 
 def import_csv(path,c):
     imported=duplicates=invalid=0

@@ -255,7 +255,7 @@ def initialize_m4(c: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_events_lead ON outreach_events(lead_id);
     """)
     # Migrate databases created before M6.
-    columns = {row["name"] for row in c.execute("PRAGMA table_info(outreach_queue)").fetchall()}
+    columns = {row[1] for row in c.execute("PRAGMA table_info(outreach_queue)").fetchall()}
     if "provider" not in columns:
         c.execute(
             "ALTER TABLE outreach_queue ADD COLUMN provider TEXT NOT NULL DEFAULT 'mock_whatsapp'"
@@ -277,7 +277,15 @@ def suppress(c: sqlite3.Connection, destination: str, reason: str, lead_id: int 
     c.commit()
 
 def is_suppressed(c: sqlite3.Connection, destination: str) -> bool:
-    return c.execute("SELECT 1 FROM suppression_list WHERE destination=? LIMIT 1", (destination.strip(),)).fetchone() is not None
+    """Return True when a destination is present on the suppression list."""
+    initialize_m4(c)
+    return (
+        c.execute(
+            "SELECT 1 FROM suppression_list WHERE destination=? LIMIT 1",
+            (destination.strip(),),
+        ).fetchone()
+        is not None
+    )
 
 def mark_draft_approved(c: sqlite3.Connection, draft_id: int) -> None:
     """Record human approval without sending or queueing the message."""
@@ -455,3 +463,22 @@ def execute_queue(c: sqlite3.Connection, provider: MessageProvider | None = None
     if provider is None:
         raise ValueError("provider is required unless dry_run=True")
     return send_queued(c, provider, daily_limit=daily_limit, dry_run=dry_run)
+
+
+def send_outreach(
+    c: sqlite3.Connection,
+    provider: MessageProvider | None = None,
+    daily_limit: int = DEFAULT_DAILY_LIMIT,
+    dry_run: bool = False,
+) -> dict[str, int]:
+    """Public V1 outreach execution contract.
+
+    Dry-run mode never calls a provider. Real sending requires an
+    explicitly injected provider implementation.
+    """
+    return execute_queue(
+        c,
+        provider=provider,
+        daily_limit=daily_limit,
+        dry_run=dry_run,
+    )
