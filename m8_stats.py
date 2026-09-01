@@ -109,6 +109,12 @@ def collect_stats(c: sqlite3.Connection, daily_limit: int = DEFAULT_DAILY_LIMIT)
     }
 
 
+
+def build_stats(c, daily_limit=DEFAULT_DAILY_LIMIT):
+    """Stable M9 V1 statistics API."""
+    return collect_stats(c, daily_limit=daily_limit)
+
+
 def _print_section(title: str) -> None:
     print(f"\n{title}\n{'-' * len(title)}")
 
